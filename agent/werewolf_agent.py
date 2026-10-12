@@ -60,21 +60,29 @@ class WerewolfAgent:
                 self.seen.add(key)
                 self.history.append({"day": day, "sender": m.sender,
                                      "recipients": m.recipients, "text": m.content[:1000]})
-        self.history = self.history[-80:]
+        self.history = self.history[-300:]
 
     def _ask(self, state, context, properties, validate, budget=35):
-        # 在 _ask() 中生成策略
         observation = state.raw.get(
             "observation", state.observation
         )
 
         role = extract_role(observation)
-
         strategy = get_strategy(
             role=role,
             game_state=state.raw.get("game_state", {}),
             observation=observation,
-            history=self.history
+            history=self.history,
+            phase=(
+                "messaging"
+                if state.phase == "messaging"
+                else (state.raw.get("game_state") or {}).get("phase")
+            ),
+            message_count=(
+                self.calls - 1
+                if state.phase == "messaging"
+                else None
+            ),
         )
 
         if context.game_type not in (None, "werewolf"):
@@ -140,7 +148,7 @@ class WerewolfAgent:
         round_key = ("day", game["day"]) if "day" in game else ("version", state.state_version)
         if round_key != self.round:
             self.round, self.calls, self.ended = round_key, 0, False
-        if self.ended or self.calls >= 3:
+        if self.ended or self.calls >= 5:
             return TERMINATE_MESSAGING
         seconds = state.raw.get("messaging_seconds_left")
         budget = min(25, max(0, seconds - 3)) if isinstance(seconds, (float, int)) else 25
