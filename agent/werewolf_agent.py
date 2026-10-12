@@ -1,5 +1,6 @@
 """Werewolf-only LLM player. Run with --agent agent.werewolf_agent."""
 from __future__ import annotations
+from .strategies import extract_role, get_strategy
 
 import json
 import time
@@ -62,6 +63,20 @@ class WerewolfAgent:
         self.history = self.history[-80:]
 
     def _ask(self, state, context, properties, validate, budget=35):
+        # 在 _ask() 中生成策略
+        observation = state.raw.get(
+            "observation", state.observation
+        )
+
+        role = extract_role(observation)
+
+        strategy = get_strategy(
+            role=role,
+            game_state=state.raw.get("game_state", {}),
+            observation=observation,
+            history=self.history
+        )
+
         if context.game_type not in (None, "werewolf"):
             raise ValueError("This agent supports werewolf only")
         self._remember(state)
@@ -75,7 +90,9 @@ class WerewolfAgent:
                               for a in state.legal_actions],
             "discussion_calls_remaining": max(0, 3 - self.calls),
         }
-        messages = [{"role": "system", "content": SYSTEM},
+
+        # 添加策略
+        messages = [{"role": "system", "content": SYSTEM + "\n\n" + strategy},
                     {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}]
         properties = {**properties, "private_notes": {"type": "string"}}
         deadline = self.clock() + budget
