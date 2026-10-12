@@ -119,7 +119,11 @@ class WerewolfAgent:
                     raise ValueError("private_notes must be text")
                 self.notes = notes[:4000]
                 return result
-            except (ProviderError, ValueError, TypeError, KeyError):
+            except (ProviderError, ValueError, TypeError, KeyError) as e:
+                print(
+                    f"[LLM ERROR] {type(e).__name__}: {e}",
+                    flush=True
+                )
                 # Do not echo provider errors, private notes or output into logs.
                 messages.append({"role": "user", "content":
                                  "Invalid answer. Follow the schema and supplied legal options; keep speech within limits."})
@@ -138,6 +142,19 @@ class WerewolfAgent:
 
         result = self._ask(state, context,
                            {"action_id": {"type": "string", "enum": list(options)}}, validate)
+
+        if result is None:
+            print(
+                f"[FALLBACK] Player{context.seat_position} "
+                f"phase={state.raw.get('game_state', {}).get('phase')}",
+                flush=True
+            )
+        else:
+            print(
+                f"[LLM SUCCESS] Player{context.seat_position} "
+                f"chose action={result.action_id}",
+                flush=True
+            )
         # Always legal; skip abstention when an API failure occurs.
         return result if result is not None else next(
             (a for a in state.legal_actions if a.action_id != "7"), state.legal_actions[0])
