@@ -79,6 +79,9 @@ class OpenAIProvider:
                 "json_schema": {"name": schema_name, "strict": True, "schema": schema},
             },
         }
+        output_limit = os.getenv("LLM_MAX_OUTPUT_TOKENS")
+        if output_limit:
+            body["max_completion_tokens"] = int(output_limit)
         # Only a game with a clock passes a timeout; otherwise the client's own applies.
         extra = {"timeout": timeout} if timeout is not None else {}
         try:
@@ -107,8 +110,11 @@ def provider_from_env() -> LLMProvider:
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set — add it to your environment or the starter's .env.")
-    return OpenAIProvider(
+    provider = OpenAIProvider(
         api_key,
         os.environ.get("OPENAI_MODEL") or DEFAULT_OPENAI_MODEL,
         base_url=os.environ.get("OPENAI_BASE_URL") or DEFAULT_OPENAI_BASE_URL,
     )
+
+    from .rate_limit import wrap_from_env
+    return wrap_from_env(provider, os.environ.get("OPENAI_BASE_URL") or DEFAULT_OPENAI_BASE_URL)

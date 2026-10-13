@@ -40,7 +40,8 @@ legal target; re-evaluate if dead or contradicted. Never invent teammate agreeme
 If no confirmed private recipient is available, do not send wolf coordination.
 Never put private notes in broadcasts.
 Return only the requested JSON. Messages should be concise English, <=40 words
-and <=240 characters. Only 'message' is sent publicly; private_notes remain local.
+and <=240 characters. Keep private_notes under 900 characters, retaining actual
+investigations, public commitments and agreed wolf targets. Only 'message' is sent publicly; private_notes remain local.
 """
 
 
@@ -109,7 +110,22 @@ class WerewolfAgent:
                 self.seen.add(key)
                 self.history.append({"day": day, "sender": m.sender,
                                      "recipients": m.recipients, "text": m.content[:1000]})
-        self.history = self.history[-300:]
+        self.history = self.history[-80:]
+
+    def _compact_history(self):
+        # Preserve recent private coordination alongside the latest public context.
+        private = [m for m in self.history if m["recipients"]][-4:]
+        selected = self.history[-8:]
+        selected = [m for m in self.history if m in selected or m in private]
+        result = []
+        remaining = 1800
+        for m in reversed(selected):
+            text = m["text"][:240]
+            if len(text) > remaining:
+                continue
+            result.append({**m, "text": text})
+            remaining -= len(text)
+        return list(reversed(result))
 
     def _ask(self, state, context, properties, validate, budget=35):
         observation = state.raw.get(
@@ -137,12 +153,16 @@ class WerewolfAgent:
         if context.game_type not in (None, "werewolf"):
             raise ValueError("This agent supports werewolf only")
         self._remember(state)
+        public_state = dict(state.raw.get("game_state") or {})
+        votes = public_state.get("vote_history")
+        if isinstance(votes, list):
+            public_state["vote_history"] = votes[-2:]
         payload = {
             "seat": context.seat_position, "phase": state.phase,
             "observation": state.raw.get("observation", state.observation),
-            "game_state": state.raw.get("game_state", {}),
-            "recent_discussion": self.history,
-            "private_notes": self.notes,
+            "game_state": public_state,
+            "recent_discussion": self._compact_history(),
+            "private_notes": self.notes[:900],
             "legal_actions": [{"action_id": a.action_id, "label": a.label}
                               for a in state.legal_actions],
             "discussion_calls_remaining": max(0, 5 - self.calls),
@@ -151,7 +171,7 @@ class WerewolfAgent:
 
         # 添加策略
         messages = [{"role": "system", "content": SYSTEM + "\n\n" + strategy},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}]
+                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":"))}]
         properties = {**properties, "private_notes": {"type": "string"}}
         deadline = self.clock() + budget
         for _ in range(2):
@@ -167,7 +187,7 @@ class WerewolfAgent:
                 notes = answer.get("private_notes")
                 if not isinstance(notes, str):
                     raise ValueError("private_notes must be text")
-                self.notes = notes[:4000]
+                self.notes = notes[:900]
                 return result
             except (ProviderError, ValueError, TypeError, KeyError) as e:
                 print(
