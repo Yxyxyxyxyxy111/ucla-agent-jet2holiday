@@ -79,9 +79,6 @@ class OpenAIProvider:
                 "json_schema": {"name": schema_name, "strict": True, "schema": schema},
             },
         }
-        output_limit = os.getenv("LLM_MAX_OUTPUT_TOKENS")
-        if output_limit:
-            body["max_completion_tokens"] = int(output_limit)
         # Only a game with a clock passes a timeout; otherwise the client's own applies.
         extra = {"timeout": timeout} if timeout is not None else {}
         try:
@@ -105,16 +102,143 @@ class OpenAIProvider:
         return data
 
 
-def provider_from_env() -> LLMProvider:
-    """``OPENAI_API_KEY`` (required), ``OPENAI_MODEL``, ``OPENAI_BASE_URL``."""
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not set — add it to your environment or the starter's .env.")
-    provider = OpenAIProvider(
-        api_key,
-        os.environ.get("OPENAI_MODEL") or DEFAULT_OPENAI_MODEL,
-        base_url=os.environ.get("OPENAI_BASE_URL") or DEFAULT_OPENAI_BASE_URL,
-    )
+class AnthropicProvider:
+    """Anthropic Claude Messages API with structured JSON output."""
 
-    from .rate_limit import wrap_from_env
-    return wrap_from_env(provider, os.environ.get("OPENAI_BASE_URL") or DEFAULT_OPENAI_BASE_URL)
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "claude-haiku-4-5-20251001",
+        *,
+        timeout: float = REQUEST_TIMEOUT_SECONDS,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self.model = model
+        self._http = httpx.Client(
+            base_url="https://api.anthropic.com",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            timeout=timeout,
+            transport=transport,
+        )
+
+    def __repr__(self) -> str:
+        return f"AnthropicProvider(model={self.model!r})"
+
+    def complete_structured(
+        self,
+        messages: list[dict],
+        schema_name: str,
+        schema: dict,
+        *,
+        timeout: float | None = None,
+    ) -> dict:
+        # Anthropic requires system instructions separately.
+        system_parts = []
+        conversation = []
+
+        for msg in messages:
+            role = msg["role"]
+            content = msg["content"]
+
+            if role == "system":
+                system_parts.append(content)
+            else:
+                conversation.append({
+                    "role": role,
+                    "content": content,
+                })
+
+        body = {
+            "model": self.model,
+            "max_tokens": 1024,
+            "system": "\n\n".join(system_parts),
+            "messages": conversation,
+            "output_config": {
+                "format": {
+                    "type": "json_schema",
+                    "schema": schema,
+                }
+            },
+        }
+
+        extra = {"timeout": timeout} if timeout is not None else {}
+
+        try:
+            response = self._http.post(
+                "/v1/messages",
+                json=body,
+                **extra,
+            )
+        except httpx.HTTPError as exc:
+            raise ProviderError(
+                f"Claude request failed ({type(exc).__name__})"
+            ) from None
+
+        if response.status_code != 200:
+            raise ProviderError(
+                f"Claude request failed (HTTP {response.status_code})"
+            )
+
+        try:
+            result = response.json()
+
+            if result.get("stop_reason") == "max_tokens":
+                raise ProviderError("Claude output was truncated")
+
+            content = "".join(
+                block.get("text", "")
+                for block in result["content"]
+                if block.get("type") == "text"
+            )
+
+            data = json.loads(content)
+
+        except (ValueError, KeyError, TypeError):
+            raise ProviderError(
+                "Claude response was not valid JSON"
+            ) from None
+
+        if not isinstance(data, dict):
+            raise ProviderError(
+                "Claude response was not a JSON object"
+            )
+
+        return data
+
+
+
+def provider_from_env() -> LLMProvider:
+    """Choose Anthropic or OpenAI based on environment variables."""
+
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+
+    if anthropic_key:
+        return AnthropicProvider(
+            api_key=anthropic_key,
+            model=os.environ.get(
+                "ANTHROPIC_MODEL",
+                "claude-haiku-4-5-20251001",
+            ),
+        )
+
+    openai_key = os.environ.get("OPENAI_API_KEY")
+
+    if openai_key:
+        return OpenAIProvider(
+            api_key=openai_key,
+            model=os.environ.get(
+                "OPENAI_MODEL"
+            ) or DEFAULT_OPENAI_MODEL,
+            base_url=os.environ.get(
+                "OPENAI_BASE_URL"
+            ) or DEFAULT_OPENAI_BASE_URL,
+        )
+
+    raise RuntimeError(
+        "No API key configured. Set ANTHROPIC_API_KEY "
+        "or OPENAI_API_KEY in .env."
+    )
