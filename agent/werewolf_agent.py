@@ -109,6 +109,7 @@ class WerewolfAgent:
         self.round = None
         self.calls = 0
         self.ended = False
+        self.spoke_this_round = False
         self.claimed_seer = False
         self.claim_records: list[str] = []
 
@@ -161,6 +162,7 @@ class WerewolfAgent:
             'own_prior_seer_reports': self.claim_records[-4:],
             'legal_actions': [{'action_id': a.action_id, 'label': a.label} for a in state.legal_actions],
             'discussion_calls_remaining': max(0, 5-self.calls),
+            'already_spoke_this_round': self.spoke_this_round,
         }
         # Explicitly tell model that heuristic is NOT verified evidence.
         if hint:
@@ -212,6 +214,7 @@ class WerewolfAgent:
         round_key = ('day', game['day']) if 'day' in game else ('version', state.state_version)
         if round_key != self.round:
             self.round, self.calls, self.ended = round_key, 0, False
+            self.spoke_this_round = False
         if self.ended or self.calls >= 5:
             return TERMINATE_MESSAGING
         seconds = state.raw.get('messaging_seconds_left')
@@ -226,6 +229,8 @@ class WerewolfAgent:
         ally = _wolf_ally(observation, own) if role == 'wolf' else None
         def validate(answer):
             if answer.get('decision') == 'end':
+                if not self.spoke_this_round:
+                    raise ValueError('First discussion turn must include a useful public message; do not end silently')
                 return TERMINATE_MESSAGING
             text = answer.get('message')
             if answer.get('decision') != 'send' or not isinstance(text, str):
@@ -245,9 +250,18 @@ class WerewolfAgent:
         result = self._ask(state, context,
             {'decision': {'type': 'string', 'enum': ['send', 'end']}, 'message': {'type': 'string'}},
             validate, budget)
-        if result is None or result is TERMINATE_MESSAGING:
+        if result is None:
+            # A model error or an over-cautious 'end' must not silence every player.
+            # Do not fabricate a claim or leak role information in the fallback.
+            if not self.spoke_this_round and budget >= 2:
+                self.spoke_this_round = True
+                return SendMessage("Let's compare available evidence and previous votes before deciding. Does anyone have a concrete concern?")
             self.ended = True
             return TERMINATE_MESSAGING
+        if result is TERMINATE_MESSAGING:
+            self.ended = True
+            return TERMINATE_MESSAGING
+        self.spoke_this_round = True
         if role == 'wolf' and _is_seer_claim(result.content):
             self.claimed_seer = True
             self.claim_records.append(result.content)
